@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+function help {
+    echo "Usage: $0 input0.mp3 input1.mp3 ... inputN.mp3 output.m4b"
+    echo "Ensure all mp3 files end with '.mp3' and the last argument ends with '.m4b'"
+    echo "  -h, --help    Show help information"
+}
+
+function rm_temp_files {
+    rm -f "${LISTING}" "${CAT}" "${CHAPTERS}"
+}
+
+## Check Arguments #############################################################
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    help
+    exit 0
+fi
+
+if [ "$#" -lt 2 ]; then
+    echo "Error: Not enough arguments" >&2
+    help >&2
+    exit 1
+fi
+
+# Check if the last argument ends with ".m4b"
+OUTPUT=${@: -1}
+if [[ "$OUTPUT" != *.m4b ]]; then
+    echo "Error: Output file must end '.m4b'" >&2
+    exit 1
+fi
+
+# Check if all other arguments end with ".mp3"
+for ARG in "${@:1:$#-1}"; do
+    if [[ "$ARG" != *.mp3 ]]; then
+        echo "Error: All input files must end with '.mp3'" >&2
+        exit 1
+    fi
+done
+
+# Temporary file names.
+OUTPUT_ROOT="${OUTPUT%????}"
+LISTING="${OUTPUT_ROOT}-listing.txt"
+CHAPTERS="${OUTPUT_ROOT}.chapters.txt"
+CAT="${OUTPUT_ROOT}.mp3"
+
+## Processing ##################################################################
+
+# Concatenate the mp3 files.
+echo "" > "${LISTING}"
+for ARG in "${@:1:$#-1}"; do
+    echo "file '${ARG}'" >> "${LISTING}"
+done
+
+echo "CONCATENATING"
+if ! ffmpeg -f concat -safe 0 -i "${LISTING}" -c copy "${CAT}"; then
+    echo "Error: Could not concatonate input files."
+    rm_temp_files
+    exit 1
+fi
+
+# Convert to m4b.
+echo "CONVERTING"
+if ! ffmpeg -i "${CAT}" "${OUTPUT}"; then
+    echo "Error: Could not convert to m4b."
+    rm_temp_files
+    exit 1
+fi
+
+## Chapters ####################################################################
+
+echo "APPLYING CHAPTERS"
+echo "" > "${CHAPTERS}"
+START_TIME=0
+for ARG in "${@:1:$#-1}"; do
+    START_TIME_FORMATTED=$(date -u -d@${START_TIME} +%H:%M:%S.%3N)
+    printf "%s %s\n" "${START_TIME_FORMATTED}" "${ARG%????}" >> "${CHAPTERS}"
+    DURATION=$(ffprobe -i "${ARG}" -show_entries format=duration -v quiet -of csv="p=0")
+    START_TIME=$(echo "${START_TIME}" + "${DURATION}" | bc)
+done
+
+if ! mp4chaps -i "${OUTPUT}"; then
+    echo "Error: Could not import chapters."
+    rm_temp_files
+    exit 1
+fi
+
+## Remove Temporary Files ######################################################
+
+rm_temp_files
